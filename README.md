@@ -1,110 +1,15 @@
-# @grml/lib-template
+# mycocepurus-smithii [WIP]
 
-An ESM-friendly TypeScript library template, set up for testing and CI.
+![A drawn logo of a fungus growing ant](https://raw.githubusercontent.com/Smiduweorc/mycocepurus-smithii/refs/heads/master/assets/logo.png)
 
-> Publishing and deployment are handled manually (custom npm settings), so no
-> release/publish workflow is included here.
+Mycocepurus-smithii is a small TypeScript library that makes a non-idempotent HTTP request (POST, PATCH) safe to send more than once. The caller sends an `Idempotency-Key` header; the library fingerprints the request, checks a store you supply for a prior attempt with that key, and either passes the request through for the first time or replays the exact stored response for every retry after. A key reused with a different request body is a hard conflict, not a guess. No bundled storage backend, no framework baked in, no retry logic of its own, just the one guarantee, done to spec.
 
-## What's inside
+### Why this exists:
 
-- **ESM-native**: `"type": "module"`, `nodenext` module resolution,
-  `verbatimModuleSyntax`, and a thin `index.ts` barrel that re-exports from
-  `src/` using `.js` specifiers.
-- **TypeScript**: strict `tsconfig.json` emitting JS to `dist/` and `.d.ts`
-  (plus declaration maps) to `dist/types/`.
-- **Testing**: Node's built-in test runner (`node:test` / `node:assert`) run
-  directly against TypeScript via [`tsx`](https://tsx.is). No extra framework,
-  no compile step, and nothing test-related ends up in `dist/`.
-- **Linting**: flat ESLint config built on `@eslint/js` and `typescript-eslint`
-  recommended sets, plus the project rules (tabs, double quotes, `no-console`,
-  ignore-pattern-aware unused checks, return-type hints).
-- **API docs**: [TypeDoc](https://typedoc.org) generates HTML docs from your
-  TSDoc comments into `docs/` (`npm run docs`).
-- **Conventional Commits**: `commitlint` enforces the
-  [Conventional Commits](https://www.conventionalcommits.org) format, and
-  [git-cliff](https://git-cliff.org) turns that history into a `CHANGELOG.md`
-  (`npm run changelog`).
-- **Git hooks**: [lefthook](https://lefthook.dev) runs ESLint on staged files
-  before commit and lints the commit message, installed automatically via the
-  `prepare` script.
-- **CI**: `.github/workflows/ci.yml` runs lint, typecheck, test, and build
-  across Linux/macOS/Windows on Node 22 and 24, builds the docs, and uploads
-  the `dist/` artifact.
-- **Editor config**: `.vscode/` recommends the ESLint + Todo Tree extensions
-  and wires up format-on-save via ESLint.
-- **Node version**: `.nvmrc` pins Node 22 (`nvm use`).
-- **Dependabot**: daily npm + GitHub Actions update PRs.
+At some point, when you get past a few thousand users, retried requests will stop becoming rare. I had a project that required me to work with telemetry, and one of the issue was that mobile users consistently had the largest portion of flaky connections. Perhaps this could be people on data moving around or bad wifi (it was about 2% of mobile users having this issue). Thus, we started needing to implement idempotency on things that were not idempotent by nature, which was a relatively easy problem to solve but we needed to integrate this across a few microservices built on a few different languages (also some other complications because one of the services ran on a windows server).
 
-## Getting started
+After solving that problem I realized that it was a problem worth looking into for the context of the javascript ecosystem.
 
-1. Copy this directory, run `git init` (if needed), then `npm install`, which
-   also installs the git hooks via the `prepare` script.
-2. Update `package.json` (`name`, `description`, `repository`, `keywords`).
-3. Replace `src/greet.ts` with your implementation and update the re-exports in
-   `index.ts`.
-4. Add tests under `tests/` as `*.test.ts`.
+Therefore, I decided to make this library not only because of the problem I had to solve, but also because there is a new [IETF draft](https://datatracker.ietf.org/doc/draft-ietf-httpapi-idempotency-key-header/) regarding the subject matter. This raises another point, a good number of NPM libraries (express-idempotency, @optimuspay/express-idempotency) predates or ignores it and are mostly based on [stripe's blog post](https://stripe.com/blog/idempotency). Which isn't a problem, and if done right will work really well but the draft does important things such as compiling a list of major API providers already using the `Idempotency-Key` convention (and rules for this convention).
 
-## Scripts
-
-| Script | What it does |
-| --- | --- |
-| `npm run build` | Compile `src/` + `index.ts` to `dist/` with type declarations. |
-| `npm run typecheck` | Type-check without emitting. |
-| `npm run lint` | Run ESLint. |
-| `npm run lint:fix` | Run ESLint and auto-fix what it can. |
-| `npm test` | Run the test suite with the Node test runner via `tsx`. |
-| `npm run docs` | Generate HTML API docs into `docs/` with TypeDoc. |
-| `npm run changelog` | Regenerate `CHANGELOG.md` from the commit history with git-cliff. |
-
-## Conventional commits & git hooks
-
-Commits follow [Conventional Commits](https://www.conventionalcommits.org)
-(`feat:`, `fix:`, `chore:`, etc.). On `npm install`, the `prepare` script
-installs [lefthook](https://lefthook.dev) git hooks. This requires a git
-repository, so run `git init` first if you copied the directory.
-
-- **pre-commit**: runs ESLint on staged JS/TS files.
-- **commit-msg**: validates the message with `commitlint`.
-
-Because the history is conventional, `npm run changelog` can regenerate
-`CHANGELOG.md` automatically.
-
-## Project layout
-
-```
-.
-├── index.ts                # public barrel, re-export your API here
-├── src/                    # implementation
-│   └── greet.ts
-├── tests/                  # *.test.ts, run with node --test via tsx
-│   ├── greet.test.ts
-│   └── tsconfig.json       # type-checks tests against the source
-├── eslint.config.mjs
-├── tsconfig.json
-├── typedoc.json            # TypeDoc config (npm run docs)
-├── commitlint.config.js    # Conventional Commits rules
-├── cliff.toml              # git-cliff changelog config
-├── lefthook.yml            # git hooks (lint + commitlint)
-├── release.sh              # version bump + changelog + annotated tag
-├── .nvmrc                  # pinned Node version
-├── .vscode/                # recommended extensions + editor settings
-└── .github/
-    ├── ISSUE_TEMPLATE/     # bug report + feature request
-    ├── workflows/ci.yml
-    └── dependabot.yml
-```
-
-## Publishing (manual)
-
-Only `dist/` is published (`"files": ["dist"]` in `package.json`, with
-`.npmignore` as a backstop). Build first, then publish with your custom npm
-settings:
-
-```sh
-npm run build
-npm publish   # with whatever registry/auth settings you use
-```
-
-To cut a release first, `./release.sh v[X.Y.Z]` bumps the version in
-`package.json`, regenerates `CHANGELOG.md`, commits, and creates an annotated
-tag. Then `git push && git push --tags` and publish as above.
+Yes this draft is expired, but I am actively watching it in hopes that it goes somewhere.
