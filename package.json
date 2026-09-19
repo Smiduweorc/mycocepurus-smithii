@@ -1,19 +1,27 @@
 {
-	"name": "@grml/lib-template",
+	"name": "mycocepurus-smithii",
 	"version": "0.0.0",
-	"description": "ESM-friendly TypeScript library template.",
+	"description": "Idempotency-Key handling to the IETF draft: one execution per key, exact replay, hard conflict on a reused key, atomic claim against concurrent copies. Bring your own store.",
 	"type": "module",
+	"sideEffects": false,
 	"main": "dist/index.js",
 	"types": "dist/types/index.d.ts",
 	"exports": {
 		".": {
 			"types": "./dist/types/index.d.ts",
 			"default": "./dist/index.js"
+		},
+		"./http": {
+			"types": "./dist/types/http.d.ts",
+			"default": "./dist/http.js"
 		}
 	},
 	"files": [
 		"dist"
 	],
+	"engines": {
+		"node": ">=22"
+	},
 	"scripts": {
 		"build": "tsc",
 		"typecheck": "tsc --noEmit && tsc --noEmit -p tests/tsconfig.json",
@@ -25,16 +33,19 @@
 		"prepare": "lefthook install"
 	},
 	"keywords": [
+		"idempotency",
+		"idempotency-key",
+		"idempotent",
+		"http",
+		"retry",
 		"typescript",
-		"esm",
-		"template",
-		"library"
+		"esm"
 	],
-	"author": "",
+	"author": "grml",
 	"license": "ISC",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/grMLEqomlkkU5Eeinz4brIrOVCUCkJuN/lib-template.git"
+		"url": "git+https://github.com/Smiduweorc/mycocepurus-smithii.git"
 	},
 	"devDependencies": {
 		"@commitlint/cli": "^21.2.2",
