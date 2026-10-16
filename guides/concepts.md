@@ -65,6 +65,14 @@ A second copy that arrives while the claim is held is refused with
 across replicas. A caller who wants concurrent in-process copies to share one
 execution puts Firefly's `SingleFlight` in front.
 
+Each claim carries a random `owner`. Storing the outcome and releasing the
+key are compare-and-set and compare-and-delete against it. An attempt can
+outlive `leaseFor` while a retry claims the key; when the first attempt then
+finishes or fails, an unconditional write or delete would hit the retry's
+claim, and a third copy would run beside the retry. With the owner check the
+late attempt leaves the claim alone, reports `lost-claim`, and its value is
+returned (or its error rethrown) without being stored.
+
 ## What is stored
 
 Everything `shouldStore` says yes to, including failures. The draft says a
@@ -81,7 +89,8 @@ rethrown unchanged.
 
 Everything the ledger does is reported to `onEvent` as a plain value: a claim,
 a replay with its age, a store, a skip, a release with the action's error, a
-refusal with its code, and a store failure with the operation that failed.
+refusal with its code, a `lost-claim` when a run outlived its lease and
+found its claim gone, and a store failure with the operation that failed.
 Nothing is thrown from a listener, and a listener that throws is ignored.
 
 ## Testing

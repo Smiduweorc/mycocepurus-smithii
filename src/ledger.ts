@@ -113,20 +113,26 @@ export class Ledger<T> {
 	 * claim is left in place, so a retry inside the lease is refused as
 	 * `in-flight` rather than run a second time.
 	 *
+	 * Storing the outcome and releasing the key act only on this run's own
+	 * claim. A run that outlives `leaseFor` may find a retry holding the key;
+	 * it then leaves that claim alone, reports `lost-claim`, and still returns
+	 * its value or rethrows its error.
+	 *
 	 * @throws {MycocepurusError} `invalid-key`, `in-flight`, `fingerprint-mismatch`.
 	 */
 	async run(request: RunRequest, action: () => Promise<T>): Promise<Outcome<T>> {
 		const id = this.#id(request.scope, request.key);
 		const { fingerprint } = request;
 
-		let held = await this.#claim(id, fingerprint);
+		const owner = globalThis.crypto.randomUUID();
+		let held = await this.#claim(id, fingerprint, owner);
 		let decision: Decision<T> =
 			held === "claimed" ? { state: "first" } : decide(held, fingerprint, this.#now());
 		if (held !== "claimed" && decision.state === "first") {
 			// The store handed back something past its window, which the contract
 			// says it should have treated as absent. One more try, then refuse
 			// rather than loop against a store that has forgotten the contract.
-			held = await this.#claim(id, fingerprint);
+			held = await this.#claim(id, fingerprint, owner);
 			decision =
 				held === "claimed" ? { state: "first" } : decide(held, fingerprint, this.#now());
 			if (decision.state === "first") {
@@ -167,25 +173,33 @@ export class Ledger<T> {
 			value = await action();
 		} catch (error) {
 			this.#emit({ type: "release", key: id, error });
-			await this.#release(id);
+			await this.#release(id, owner);
 			throw error;
 		}
 
 		if (!this.#shouldStore(value)) {
 			this.#emit({ type: "skip", key: id });
-			await this.#release(id);
+			await this.#release(id, owner);
 			return { value, state: "first", age: 0 };
 		}
 
 		try {
-			await this.#store.complete(id, {
-				state: "complete",
-				fingerprint,
-				value,
-				storedAt: this.#now(),
-				retainFor: this.#retainFor,
-			});
-			this.#emit({ type: "store", key: id, retainFor: this.#retainFor });
+			const stored = await this.#store.complete(
+				id,
+				{
+					state: "complete",
+					fingerprint,
+					value,
+					storedAt: this.#now(),
+					retainFor: this.#retainFor,
+				},
+				owner
+			);
+			this.#emit(
+				stored
+					? { type: "store", key: id, retainFor: this.#retainFor }
+					: { type: "lost-claim", key: id, operation: "complete" }
+			);
 		} catch (error) {
 			this.#emit({ type: "store-error", key: id, operation: "complete", error });
 		}
@@ -197,7 +211,12 @@ export class Ledger<T> {
 	 * longer be replayed is the caller's, because the ledger cannot see why.
 	 */
 	async forget(scope: string, key: string): Promise<void> {
-		await this.#release(this.#id(scope, key));
+		const id = this.#id(scope, key);
+		try {
+			await this.#store.forget(id);
+		} catch (error) {
+			this.#emit({ type: "store-error", key: id, operation: "forget", error });
+		}
 	}
 
 	#id(scope: string, key: string): string {
@@ -215,13 +234,14 @@ export class Ledger<T> {
 		return `${namespace.length}:${namespace}:${scope.length}:${scope}:${key}`;
 	}
 
-	async #claim(id: string, fingerprint: string): Promise<"claimed" | Entry<T>> {
+	async #claim(id: string, fingerprint: string, owner: string): Promise<"claimed" | Entry<T>> {
 		try {
 			return await this.#store.claim(id, {
 				state: "in-flight",
 				fingerprint,
 				claimedAt: this.#now(),
 				leaseFor: this.#leaseFor,
+				owner,
 			});
 		} catch (error) {
 			this.#emit({ type: "store-error", key: id, operation: "claim", error });
@@ -229,9 +249,11 @@ export class Ledger<T> {
 		}
 	}
 
-	async #release(id: string): Promise<void> {
+	async #release(id: string, owner: string): Promise<void> {
 		try {
-			await this.#store.release(id);
+			if (!(await this.#store.release(id, owner))) {
+				this.#emit({ type: "lost-claim", key: id, operation: "release" });
+			}
 		} catch (error) {
 			this.#emit({ type: "store-error", key: id, operation: "release", error });
 		}

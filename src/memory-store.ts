@@ -48,12 +48,25 @@ export class MemoryStore<T = unknown> implements Store<T> {
 	}
 
 	/** Expiry is measured against this store's own clock, not the writer's. */
-	async complete(key: string, entry: Completion<T>): Promise<void> {
+	async complete(key: string, entry: Completion<T>, owner: string): Promise<boolean> {
+		if (!this.#owns(key, owner)) return false;
 		this.#set(key, entry, entry.retainFor);
+		return true;
 	}
 
-	async release(key: string): Promise<void> {
+	async release(key: string, owner: string): Promise<boolean> {
+		if (!this.#owns(key, owner)) return false;
 		this.#entries.delete(key);
+		return true;
+	}
+
+	async forget(key: string): Promise<void> {
+		this.#entries.delete(key);
+	}
+
+	#owns(key: string, owner: string): boolean {
+		const held = this.#get(key);
+		return held?.state === "in-flight" && held.owner === owner;
 	}
 
 	#get(key: string): Entry<T> | undefined {
