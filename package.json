@@ -1,6 +1,6 @@
 {
 	"name": "mycocepurus-smithii",
-	"version": "1.0.0",
+	"version": "2.0.0",
 	"description": "Idempotency-Key handling to the IETF draft: one execution per key, exact replay, hard conflict on a reused key, atomic claim against concurrent copies. Bring your own store.",
 	"type": "module",
 	"sideEffects": false,
