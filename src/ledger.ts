@@ -16,11 +16,18 @@ export interface LedgerOptions<T> {
 	 * attempt and its retry both run.
 	 */
 	leaseFor: number;
-	/** Longest key accepted. A property of what your store is happy to index. */
+	/**
+	 * Longest key accepted, in characters. It bounds the client's key only: the
+	 * store id adds the namespace, the scope, their lengths in decimal and four
+	 * `:`, so size your store's index for the longest id, not the longest key.
+	 */
 	maxKeyLength: number;
 	/** Whether a completed value is remembered. {@link storeAnything} opts in to all of them. */
 	shouldStore: ShouldStore<T>;
-	/** Prefixed onto every key. Nothing is derived, hashed or normalised. */
+	/**
+	 * Prefixed onto every store id, so ledgers can share a store. Nothing is
+	 * hashed or normalised. Defaults to the empty string, which is no namespace.
+	 */
 	namespace?: string;
 	/** Swappable clock. Defaults to `Date.now`. */
 	now?: () => number;
@@ -35,8 +42,8 @@ export interface RunRequest {
 	 * cannot replay another's outcome by guessing a key. Your auth layer knows
 	 * this; the ledger does not, so it is required.
 	 *
-	 * The store key is `namespace:scope:key` with nothing escaped, so a scope
-	 * that contains `:` must not also be the prefix of another scope.
+	 * Any string but the empty one. It is length-prefixed in the store id, so a
+	 * `:` in it cannot make two scopes meet.
 	 */
 	scope: string;
 	/** The client's promise that two requests are the same request. Unquoted. */
@@ -64,7 +71,7 @@ export class Ledger<T> {
 	readonly #leaseFor: number;
 	readonly #maxKeyLength: number;
 	readonly #shouldStore: ShouldStore<T>;
-	readonly #prefix: string;
+	readonly #namespace: string;
 	readonly #now: () => number;
 	readonly #onEvent: ((event: Event) => void) | undefined;
 
@@ -92,7 +99,7 @@ export class Ledger<T> {
 		this.#shouldStore = options.shouldStore;
 		this.#now = options.now ?? Date.now;
 		this.#onEvent = options.onEvent;
-		this.#prefix = options.namespace === undefined ? "" : `${options.namespace}:`;
+		this.#namespace = options.namespace ?? "";
 	}
 
 	/**
@@ -200,7 +207,12 @@ export class Ledger<T> {
 				`scope must be a non-empty string, received ${String(scope)}`
 			);
 		}
-		return `${this.#prefix}${scope}:${assertKey(key, this.#maxKeyLength)}`;
+		assertKey(key, this.#maxKeyLength);
+		// Namespace and scope are length-prefixed because both may contain `:`.
+		// Joined bare, scope "t:alice" with key "pay" and scope "t" with key
+		// "alice:pay" were one id, and one tenant replayed the other's outcome.
+		const namespace = this.#namespace;
+		return `${namespace.length}:${namespace}:${scope.length}:${scope}:${key}`;
 	}
 
 	async #claim(id: string, fingerprint: string): Promise<"claimed" | Entry<T>> {

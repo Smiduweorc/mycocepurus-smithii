@@ -21,9 +21,21 @@ A run is about three strings.
   and query, and the body bytes. It leaves headers out, because a trace id or
   a refreshed token would turn every honest retry into a mismatch.
 
-The store key is `namespace:scope:key`. Nothing is derived, hashed or escaped
-on the way in, so a scope that contains `:` must not also be the prefix of
-another scope.
+The store id is `<namespace length>:<namespace>:<scope length>:<scope>:<key>`,
+lengths in decimal UTF-16 code units, so scope `user-1`, key `k` and no
+namespace is `0::6:user-1:k`. Nothing is hashed or escaped. The lengths are
+what keep a `:` inside a scope or namespace from making two ids equal: joined
+bare, scope `t:alice` with key `pay` and scope `t` with key `alice:pay` would
+be the same entry, and one client would replay the other's response.
+
+`maxKeyLength` bounds the client's key only. The id is longer by the
+namespace, the scope, their lengths and four `:`, and that longer string is
+what your store indexes.
+
+The id format is part of what is stored. A release that changes it, which
+the changelog marks as breaking, leaves every earlier entry unreachable: a
+retry that straddles the deploy runs the action again, and the old entries
+sit in the store until their own expiry.
 
 ## Lease and retention
 

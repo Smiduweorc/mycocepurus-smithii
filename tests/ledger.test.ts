@@ -185,6 +185,31 @@ test("the same key in two scopes is two keys", async () => {
 	assert.equal(calls(), 2);
 });
 
+test("a scope containing a colon cannot replay another scope's key", async () => {
+	const { ledger } = build();
+	const { action, calls } = counter("v");
+
+	await ledger.run(req("alice:pay", "f", "tenant1"), action);
+	const outcome = await ledger.run(req("pay", "f", "tenant1:alice"), action);
+
+	assert.deepEqual(outcome, { value: "v-2", state: "first", age: 0 });
+	assert.equal(calls(), 2);
+});
+
+test("a namespace containing a colon cannot reach another namespace's keys", async () => {
+	const time = clock();
+	const store = new MemoryStore<string>({ maxEntries: 8, now: time.now });
+	const ledger = (namespace?: string): Ledger<string> =>
+		new Ledger<string>({ store, ...NUMBERS, shouldStore: storeAnything, now: time.now, namespace });
+	const { action, calls } = counter("v");
+
+	await ledger("api").run(req("k", "f", "s:x"), action);
+	await ledger("api:s").run(req("k", "f", "x"), action);
+	await ledger().run(req("s:x:k", "f", "api"), action);
+
+	assert.equal(calls(), 3);
+});
+
 test("an empty scope is refused before the store is touched", async () => {
 	const { ledger } = build();
 	await assert.rejects(
@@ -220,7 +245,7 @@ test("a store that cannot take the claim has its error rethrown unchanged", asyn
 	await assert.rejects(ledger.run(req(), action), (error: unknown) => error === down);
 	assert.equal(calls(), 0);
 	assert.deepEqual(events, [
-		{ type: "store-error", key: "user-1:k", operation: "claim", error: down },
+		{ type: "store-error", key: "0::6:user-1:k", operation: "claim", error: down },
 	]);
 });
 
@@ -310,9 +335,9 @@ test("events for a first run and its replay, in order", async () => {
 	await ledger.run(req(), async () => "w");
 
 	assert.deepEqual(events, [
-		{ type: "claim", key: "user-1:k" },
-		{ type: "store", key: "user-1:k", retainFor: NUMBERS.retainFor },
-		{ type: "replay", key: "user-1:k", age: 10 },
+		{ type: "claim", key: "0::6:user-1:k" },
+		{ type: "store", key: "0::6:user-1:k", retainFor: NUMBERS.retainFor },
+		{ type: "replay", key: "0::6:user-1:k", age: 10 },
 	]);
 });
 
@@ -325,7 +350,7 @@ test("a refusal is reported as an event with its code", async () => {
 
 	assert.deepEqual(events.at(-1), {
 		type: "refuse",
-		key: "user-1:k",
+		key: "0::6:user-1:k",
 		code: "fingerprint-mismatch",
 	});
 });
@@ -339,7 +364,7 @@ test("a listener that throws does not break the run", async () => {
 	assert.equal((await ledger.run(req(), async () => "v")).value, "v");
 });
 
-test("the namespace is prefixed onto the store key", async () => {
+test("the store id length-prefixes the namespace and the scope", async () => {
 	const seen: string[] = [];
 	const store: Store<string> = {
 		claim: async (key: string, _entry: Claim) => {
@@ -352,8 +377,18 @@ test("the namespace is prefixed onto the store key", async () => {
 	const { ledger } = build({ store, namespace: "payments" });
 
 	await ledger.run(req(), async () => "v");
+	await build({ store }).ledger.run(req("a:b", "f", "t:ü"), async () => "v");
 
-	assert.deepEqual(seen, ["payments:user-1:k"]);
+	assert.deepEqual(seen, ["8:payments:6:user-1:k", "0::3:t:ü:a:b"]);
+});
+
+test("maxKeyLength bounds the key alone, however long the scope is", async () => {
+	const { ledger } = build();
+	const key = "x".repeat(NUMBERS.maxKeyLength);
+
+	const outcome = await ledger.run(req(key, "f", "s".repeat(1_000)), async () => "v");
+
+	assert.equal(outcome.value, "v");
 });
 
 test("forget releases the key so it runs again", async () => {
