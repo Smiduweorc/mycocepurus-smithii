@@ -49,6 +49,15 @@ function gate(value: string): { action: () => Promise<string>; open: () => void 
 	return { action: () => settled, open };
 }
 
+/** An action that rejects only when the test says so. */
+function failingGate(error: Error): { action: () => Promise<string>; fail: () => void } {
+	let fail = (): void => {};
+	const settled = new Promise<string>((_resolve, reject) => {
+		fail = (): void => reject(error);
+	});
+	return { action: () => settled, fail };
+}
+
 const req = (key = "k", fingerprint = "f", scope = "user-1"): {
 	scope: string;
 	key: string;
@@ -163,6 +172,88 @@ test("a claim past its lease lets the retry become the first attempt", async () 
 	stuck.open();
 });
 
+test("an attempt that outlives its lease and then fails leaves the next attempt's claim alone", async () => {
+	const events: Event[] = [];
+	const { ledger, time } = build({ onEvent: (event) => events.push(event) });
+	const boom = new Error("late failure");
+	const hung = failingGate(boom);
+	const second = gate("b");
+	const { action: third, calls } = counter("c");
+
+	const a = ledger.run(req(), hung.action);
+	time.advance(NUMBERS.leaseFor + 1);
+	const b = ledger.run(req(), second.action);
+	hung.fail();
+	await assert.rejects(a, (error: unknown) => error === boom);
+
+	await assert.rejects(ledger.run(req(), third), refusal("in-flight"));
+	assert.equal(calls(), 0);
+	assert.ok(
+		events.some((event) => event.type === "lost-claim" && event.operation === "release")
+	);
+
+	second.open();
+	assert.deepEqual(await b, { value: "b", state: "first", age: 0 });
+	time.advance(10);
+	assert.deepEqual(await ledger.run(req(), third), { value: "b", state: "replayed", age: 10 });
+});
+
+test("an attempt that outlives its lease and then succeeds does not overwrite the next attempt's claim", async () => {
+	const events: Event[] = [];
+	const { ledger, time } = build({ onEvent: (event) => events.push(event) });
+	const first = gate("a");
+	const second = gate("b");
+	const { action: third, calls } = counter("c");
+
+	const a = ledger.run(req(), first.action);
+	time.advance(NUMBERS.leaseFor + 1);
+	const b = ledger.run(req(), second.action);
+	first.open();
+	assert.deepEqual(await a, { value: "a", state: "first", age: 0 });
+
+	await assert.rejects(ledger.run(req(), third), refusal("in-flight"));
+	assert.equal(calls(), 0);
+	assert.ok(
+		events.some((event) => event.type === "lost-claim" && event.operation === "complete")
+	);
+
+	second.open();
+	await b;
+	assert.equal((await ledger.run(req(), third)).value, "b");
+});
+
+test("an attempt that outlives its lease while nobody claims after it loses its outcome", async () => {
+	const events: Event[] = [];
+	const { ledger, time } = build({ onEvent: (event) => events.push(event) });
+	const slow = gate("a");
+	const { action, calls } = counter("c");
+
+	const a = ledger.run(req(), slow.action);
+	time.advance(NUMBERS.leaseFor + 1);
+	slow.open();
+
+	assert.deepEqual(await a, { value: "a", state: "first", age: 0 });
+	assert.deepEqual(await ledger.run(req(), action), { value: "c-1", state: "first", age: 0 });
+	assert.equal(calls(), 1);
+	assert.ok(events.some((event) => event.type === "lost-claim"));
+});
+
+test("shouldStore declining after the lease passed leaves the next attempt's claim alone", async () => {
+	const { ledger, time } = build({ shouldStore: (value) => value !== "skip" });
+	const first = gate("skip");
+	const second = gate("b");
+
+	const a = ledger.run(req(), first.action);
+	time.advance(NUMBERS.leaseFor + 1);
+	const b = ledger.run(req(), second.action);
+	first.open();
+	await a;
+
+	await assert.rejects(ledger.run(req(), async () => "c"), refusal("in-flight"));
+	second.open();
+	await b;
+});
+
 test("a completion past its retention lets the key run again", async () => {
 	const { ledger, time } = build();
 	const { action, calls } = counter("v");
@@ -211,8 +302,9 @@ test("a store that cannot take the claim has its error rethrown unchanged", asyn
 			claim: async () => {
 				throw down;
 			},
-			complete: async () => {},
-			release: async () => {},
+			complete: async () => true,
+			release: async () => true,
+			forget: async () => {},
 		},
 	});
 	const { action, calls } = counter("v");
@@ -234,7 +326,8 @@ test("a store that cannot record the outcome still hands the value back", async 
 			complete: async () => {
 				throw down;
 			},
-			release: async () => {},
+			release: async () => true,
+			forget: async () => {},
 		},
 	});
 
@@ -254,6 +347,7 @@ test("a store that hands back an expired entry is asked once more, then treated 
 		fingerprint: "f",
 		claimedAt: 0,
 		leaseFor: 1,
+		owner: "someone-else",
 	};
 	let claims = 0;
 	const { ledger } = build({
@@ -262,8 +356,9 @@ test("a store that hands back an expired entry is asked once more, then treated 
 				claims += 1;
 				return stale;
 			},
-			complete: async () => {},
-			release: async () => {},
+			complete: async () => true,
+			release: async () => true,
+			forget: async () => {},
 		},
 	});
 
@@ -278,6 +373,7 @@ test("a live completion on the second claim is replayed, not treated as busy", a
 		fingerprint: "f",
 		claimedAt: 0,
 		leaseFor: 1,
+		owner: "someone-else",
 	};
 	const done: Entry<string> = {
 		state: "complete",
@@ -290,8 +386,9 @@ test("a live completion on the second claim is replayed, not treated as busy", a
 	const { ledger } = build({
 		store: {
 			claim: async () => answers.shift() ?? "claimed",
-			complete: async () => {},
-			release: async () => {},
+			complete: async () => true,
+			release: async () => true,
+			forget: async () => {},
 		},
 	});
 
@@ -346,8 +443,9 @@ test("the namespace is prefixed onto the store key", async () => {
 			seen.push(key);
 			return "claimed";
 		},
-		complete: async (_key: string, _entry: Completion<string>) => {},
-		release: async () => {},
+		complete: async (_key: string, _entry: Completion<string>) => true,
+		release: async () => true,
+		forget: async () => {},
 	};
 	const { ledger } = build({ store, namespace: "payments" });
 

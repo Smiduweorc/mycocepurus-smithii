@@ -11,6 +11,7 @@ const claim: Entry<string> = {
 	fingerprint: "f",
 	claimedAt: NOW - 50,
 	leaseFor: 100,
+	owner: "o",
 };
 
 const done: Entry<string> = {

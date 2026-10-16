@@ -13,7 +13,7 @@ No runtime dependencies, no `node:` imports, and nothing happens at import time.
 - **want it to pick the numbers.** How long a key is remembered, how long a claim may be held, and how long a key may be are properties of your clients and your store. All three are required.
 - **want keys to be global.** `scope` is required: a key belongs to the client that sent it, and one client must not be able to replay another's response by guessing.
 - **want the second concurrent copy to wait for the first.** The draft says it gets a conflict. Waiting is [Firefly](https://github.com/Smiduweorc/firefly)'s `SingleFlight`, in front of this.
-- **want a store shipped.** `MemoryStore` is for one process and for tests. The `Store` contract is three methods, and the atomic one is `SET NX` in Redis.
+- **want a store shipped.** `MemoryStore` is for one process and for tests. The `Store` contract is four methods: `claim` is `SET NX` in Redis, and `complete` and `release` are compare-and-set and compare-and-delete on the claim's owner.
 - **want it to write the 409.** `statusFor` gives you the draft's number; the body is your API's contract.
 
 ## How it works
@@ -87,7 +87,7 @@ if (outcome.state === "replayed") metrics.increment("jobs.replayed");
 
 Same guarantee for a queue consumer or a cron that may fire twice.
 
-**4. Bring a real store.** Three methods. `claim` is `SET key value NX PX leaseFor`; on a miss, read the entry back and return it. `complete` is `SET key value PX retainFor`. `release` is `DEL`. `Codec` says what "value" is on the wire.
+**4. Bring a real store.** Four methods. `claim` is `SET key value NX PX leaseFor`; on a miss, read the entry back and return it. `complete` and `release` take the claim's `owner` and act only while the key still holds that live claim: in Redis each is a Lua script that reads the entry, compares `owner`, then runs `SET key value PX retainFor` or `DEL`; in Postgres they are `UPDATE ... WHERE key = $1 AND owner = $2` and `DELETE ... WHERE key = $1 AND owner = $2`. `forget` is a plain `DEL`. `Codec` says what "value" is on the wire.
 
 ## Documentation
 

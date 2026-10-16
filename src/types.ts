@@ -14,6 +14,12 @@ export type Entry<T> =
 			claimedAt: number;
 			/** How long past `claimedAt` the claim is honoured before the attempt is presumed dead. */
 			leaseFor: number;
+			/**
+			 * Random per attempt. `complete` and `release` act only while the claim
+			 * under the key still carries it, so an attempt that outlived its lease
+			 * cannot touch the claim of the attempt that replaced it.
+			 */
+			owner: string;
 	  }
 	| {
 			state: "complete";
@@ -35,24 +41,41 @@ export type Completion<T> = Extract<Entry<T>, { state: "complete" }>;
  * Where the keys live. Async everywhere, including in memory, so that moving
  * from a process-local store to a networked one is a constructor change.
  *
- * `claim` is the whole guarantee. It MUST be atomic: two callers claiming one
- * key at once see exactly one `"claimed"`. It MUST treat a claim whose lease
- * has expired, and a completion whose retention has expired, as absent, so a
- * retry of a dead attempt can become the first attempt. `SET NX PX` in Redis
- * and `INSERT ... ON CONFLICT DO NOTHING` in Postgres are both this method.
- * Everything else is bookkeeping.
+ * Three methods MUST be atomic, each as one operation:
+ *
+ * - `claim` is the whole guarantee: two callers claiming one key at once see
+ *   exactly one `"claimed"`. It MUST treat a claim whose lease has expired,
+ *   and a completion whose retention has expired, as absent, so a retry of a
+ *   dead attempt can become the first attempt. `SET NX PX` in Redis and
+ *   `INSERT ... ON CONFLICT DO NOTHING` in Postgres are this method.
+ * - `complete` and `release` compare, then write or delete. An attempt can
+ *   outlive its lease while a retry claims the key; when the first attempt
+ *   finally finishes, a blind write would overwrite the retry's claim and a
+ *   blind delete would remove it, letting a third copy run beside the retry.
+ *   In Redis each is a Lua script that reads the entry, checks it is a live
+ *   claim with `owner`, and only then runs `SET ... PX` or `DEL`. In Postgres
+ *   they are `UPDATE ... WHERE key = $1 AND owner = $2 AND expires_at > now()`
+ *   and `DELETE ... WHERE key = $1 AND owner = $2`, with the row count saying
+ *   whether it happened.
  */
 export interface Store<T = unknown> {
 	/** Write `entry` only if nothing live is held under `key`. Returns `"claimed"`, or what is held. */
 	claim(key: string, entry: Claim): Promise<"claimed" | Entry<T>>;
 	/**
-	 * Replace the claim with the outcome. `entry.retainFor` is a hint for
-	 * reclaiming space; the age is re-checked on the way out and store expiry is
-	 * never trusted for correctness.
+	 * Replace the claim with the outcome, only if `key` holds a live claim whose
+	 * `owner` is `owner`. Returns whether it did. `entry.retainFor` is a hint
+	 * for reclaiming space; the age is re-checked on the way out and store
+	 * expiry is never trusted for correctness.
 	 */
-	complete(key: string, entry: Completion<T>): Promise<void>;
-	/** Drop whatever is held. Called when an action threw, or on `forget`. */
-	release(key: string): Promise<void>;
+	complete(key: string, entry: Completion<T>, owner: string): Promise<boolean>;
+	/**
+	 * Drop the claim, only if `key` holds a claim whose `owner` is `owner`.
+	 * Returns whether it did. Called when an action threw or `shouldStore`
+	 * declined.
+	 */
+	release(key: string, owner: string): Promise<boolean>;
+	/** Drop whatever is held, whoever holds it. Called by `Ledger.forget`. */
+	forget(key: string): Promise<void>;
 }
 
 /**
@@ -103,9 +126,15 @@ export type Event =
 	/** The action threw. The error is rethrown to the caller after this. */
 	| { type: "release"; key: string; error: unknown }
 	| { type: "refuse"; key: string; code: "in-flight" | "fingerprint-mismatch" }
+	/**
+	 * The attempt outlived its lease and its claim was gone or replaced when it
+	 * finished, so its outcome was not stored or its release did nothing. The
+	 * value is still returned, or the action's error still rethrown.
+	 */
+	| { type: "lost-claim"; key: string; operation: "complete" | "release" }
 	| {
 			type: "store-error";
 			key: string;
-			operation: "claim" | "complete" | "release";
+			operation: "claim" | "complete" | "release" | "forget";
 			error: unknown;
 	  };
